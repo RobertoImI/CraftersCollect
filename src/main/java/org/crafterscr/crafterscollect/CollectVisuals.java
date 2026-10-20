@@ -5,6 +5,9 @@ import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
@@ -27,15 +30,35 @@ public final class CollectVisuals {
         final String game;
         final int serial; // -1 para preview
         final Map<Integer, Integer> entityByPoint = new HashMap<>();
+        // Sólo para vista previa OP: ID flotante junto a cada objeto.
+        final Map<Integer, Integer> labelByPoint = new HashMap<>();
         final Map<Integer, Long> appearedAt = new HashMap<>();
         Session(String game, int serial) { this.game = game; this.serial = serial; }
     }
 
     public static void clear(ServerPlayer player) {
         Session session = SESSIONS.remove(player.getUUID());
-        if (session == null || session.entityByPoint.isEmpty()) return;
-        int[] ids = session.entityByPoint.values().stream().mapToInt(Integer::intValue).toArray();
-        player.connection.send(new ClientboundRemoveEntitiesPacket(ids));
+        if (session == null) return;
+        List<Integer> all = new ArrayList<>(session.entityByPoint.values());
+        all.addAll(session.labelByPoint.values());
+        if (!all.isEmpty()) {
+            player.connection.send(new ClientboundRemoveEntitiesPacket(
+                    all.stream().mapToInt(Integer::intValue).toArray()));
+        }
+    }
+
+    /**
+     * Cuando el OP cambia un punto, reenvía todos los marcadores de esa preview.
+     * Una sesión de juego normal no se modifica y tampoco ve estos números.
+     */
+    public static void refreshPreviews(MinecraftServer server, String gameId) {
+        CollectData.Game game = CollectData.get(server).games.get(gameId);
+        for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
+            Session session = SESSIONS.get(viewer.getUUID());
+            if (session == null || session.serial != -1 || !session.game.equals(gameId)) continue;
+            clear(viewer);
+            if (game != null) refresh(viewer, game, null);
+        }
     }
 
     public static void forget(UUID uuid) { SESSIONS.remove(uuid); }
@@ -81,7 +104,10 @@ public final class CollectVisuals {
             boolean old = entityId != null && player.level().getGameTime()
                     - session.appearedAt.getOrDefault(point.id(), 0L) > 4600;
             if (entityId != null && (!eligible || dist > HIDE_SQ || old)) {
-                player.connection.send(new ClientboundRemoveEntitiesPacket(entityId));
+                Integer labelId = session.labelByPoint.remove(point.id());
+                player.connection.send(labelId == null
+                        ? new ClientboundRemoveEntitiesPacket(entityId)
+                        : new ClientboundRemoveEntitiesPacket(entityId, labelId));
                 session.entityByPoint.remove(point.id());
                 session.appearedAt.remove(point.id());
                 entityId = null;
@@ -104,6 +130,24 @@ public final class CollectVisuals {
                     player.connection.send(new ClientboundSetEntityDataPacket(fake.getId(), values));
                 session.entityByPoint.put(point.id(), fake.getId());
                 session.appearedAt.put(point.id(), player.level().getGameTime());
+
+                if (attempt == null) {
+                    // Holograma sólo para el OP en preview. ArmorStand invisible
+                    // con nombre visible, generado sólo mediante paquetes vanilla.
+                    ArmorStand label = new ArmorStand(player.serverLevel(),
+                            point.x(), point.y() - 0.55, point.z());
+                    label.setInvisible(true);
+                    label.setNoGravity(true);
+                    label.setSilent(true);
+                    label.setCustomName(Component.literal("§e§l#" + point.id()));
+                    label.setCustomNameVisible(true);
+                    player.connection.send(new ClientboundAddEntityPacket(label, 0,
+                            BlockPos.containing(label.position())));
+                    var labelValues = label.getEntityData().getNonDefaultValues();
+                    if (labelValues != null && !labelValues.isEmpty())
+                        player.connection.send(new ClientboundSetEntityDataPacket(label.getId(), labelValues));
+                    session.labelByPoint.put(point.id(), label.getId());
+                }
             }
         }
     }

@@ -12,6 +12,7 @@ public final class CraftersCollect {
         NeoForge.EVENT_BUS.addListener(CollectCommands::register);
         NeoForge.EVENT_BUS.addListener(CollectService::onServerTick);
         NeoForge.EVENT_BUS.addListener(CollectService::onLogout);
+        NeoForge.EVENT_BUS.addListener(CollectService::onLogin);
         NeoForge.EVENT_BUS.addListener(CollectService::onServerStopped);
     }
 }

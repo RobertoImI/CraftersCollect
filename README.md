@@ -1,4 +1,4 @@
-# CraftersCollect v0.1.1 — código fuente
+# CraftersCollect v0.1.2 — código fuente
 
 **Minecraft 1.21.1 · NeoForge 21.1.218 · Java 21 · mod server-side**
 
@@ -35,7 +35,7 @@ CraftersCollect/
 El lanzador descargará Gradle 8.10.2 desde services.gradle.org en el primer uso y Gradle descargará las dependencias de NeoForge desde sus repositorios. Con internet disponible, el jar se generará en:
 
 ```text
-build/libs/crafterscollect-0.1.1.jar
+build/libs/crafterscollect-0.1.2.jar
 ```
 
 **Alternativa sin ejecutar el lanzador:** instala Gradle 8.10.2 y ejecuta `gradle clean build`. También hay un workflow de GitHub Actions que puede compilarlo automáticamente al subir los archivos a un repositorio.
@@ -146,10 +146,14 @@ Los comandos están restringidos a permiso nivel 2. Un NPC o bloque de comandos 
 | `/crafterscollect item clear pascua` | Limpiar apariencias |
 | `/crafterscollect point list pascua` | Ver IDs y coordenadas |
 | `/crafterscollect point remove pascua 5` | Borrar punto #5 |
+| `/crafterscollect point nearest pascua` | Identificar el punto más cercano (a 8 bloques o menos) |
+| `/crafterscollect point move pascua 5` | Reubicar el punto #5 a donde estás parado, sin cambiar su ID |
+| `/crafterscollect point remove-nearest pascua` | Eliminar el punto más cercano (máximo 3 bloques) |
 | `/crafterscollect reward list pascua` | Ver rangos |
 | `/crafterscollect reward remove pascua 0 10` | Borrar rango entero |
 | `/crafterscollect results pascua Steve` | Ver resultados e historial reciente |
 | `/crafterscollect pending pascua Steve` | Recuperar premios que no pudieron aparecer; requiere espacio libre |
+| `/crafterscollect pending info pascua Steve` | Ver cantidad y tipos de objetos pendientes antes de recuperarlos |
 | `/crafterscollect attempts info pascua Steve` | Ver oportunidades |
 | `/crafterscollect attempts add pascua Steve 1` | Sumar un intento |
 | `/crafterscollect attempts reset pascua Steve` | Reiniciar intentos base usados |
@@ -180,7 +184,7 @@ No modifica archivos de Easy NPC, no necesita dependencias de otro mod y no usa 
 - [ ] `attempts add` y `attempts reset` conservan el historial.
 - [ ] Comprobar `@p` desde tu NPC concreto con otros jugadores cerca.
 
-## 9. Límites de la v0.1.1
+## 9. Límites de la v0.1.2
 
 - Los objetos se representan con **ítems vanilla falsos** (bobbing y giro natural), no con un `item_display` de escala y transformación personalizada. El tamaño y velocidad de giro todavía no son configurables.
 - El sonido, partículas, radio de visualización y colores del HUD son fijos en v0.1.0 (el radio de **recogida** sí es configurable).
@@ -198,3 +202,48 @@ No modifica archivos de Easy NPC, no necesita dependencias de otro mod y no usa 
 4. Termina inmediatamente al recoger todos los puntos (un intento sigue dando un solo premio).
 
 **Compatibilidad:** la nueva cola opcional `pendingItems` se incorpora al guardado existente: los mundos antiguos sin ese campo cargan con la cola vacía. Haz copia de seguridad del mundo antes de probar cualquier actualización.
+
+
+## 11. Parche v0.1.2 (administración de puntos y premios pendientes)
+
+### Gestión de puntos por ID
+
+Activa `/crafterscollect point preview pascua`. En esta vista el operador ve cada objeto
+con un número amarillo **#ID** flotando cerca; nadie más lo ve. Los IDs se mantienen
+estables aunque borres o muevas otros puntos. El etiquetado se apaga al salir de
+preview y no aparece durante las partidas normales.
+
+- `/crafterscollect point nearest pascua`: encuentra el punto más cercano dentro
+  de 8 bloques y muestra el ID.
+- `/crafterscollect point move pascua 5`: mueve el #5 a la posición donde
+  estás parado, incluso en otra dimensión. Su ID sigue siendo #5.
+- `/crafterscollect point remove pascua 5`: borra por ID, como antes.
+- `/crafterscollect point remove-nearest pascua`: borra directamente el
+  más cercano a 3 bloques o menos; úsalo sólo cuando tengas claro cuál es.
+- Los cambios actualizan inmediatamente la vista previa de todos los operadores
+  que estén mirando ese minijuego, sin cambiar las partidas de otros eventos.
+- Por seguridad no se puede editar un minijuego mientras alguien está jugando.
+
+### Recompensas pendientes
+
+Las recompensas que no pudieron caer al suelo se almacenan en la lista persistente
+`pendingItems` existente desde 0.1.1. Ahora:
+
+- `/crafterscollect pending info pascua Steve`: muestra qué objetos y cuánto queda por recuperar.
+- `/crafterscollect pending pascua Steve`: intenta ingresar únicamente lo que cabe
+  en el inventario, dejando guardado el resto, sin tirarlo otra vez al suelo.
+- El jugador recibe un recordatorio al reconectarse si tiene algo pendiente.
+- Esta recuperación **no consume intentos** ni vuelve a ejecutar el premio original.
+- Sólo incluye recompensas cuyo spawn fue rechazado. **Los drops reales ya creados
+  que luego desaparezcan por intervención de otro mod no pueden rescatarse**.
+- El guardado de inventarios y SavedData no es una transacción atómica frente
+  a fallos repentinos de energía. Haz copias de seguridad.
+
+### Pruebas sugeridas
+
+1. Crear 3 puntos, activar preview y confirmar que aparecen #1, #2, #3.
+2. Pararse en otro sitio y mover #2: comprobar que #1 y #3 no cambian y que la preview se actualiza.
+3. Usar `point nearest`, luego `point remove-nearest` y comprobar el ID eliminado.
+4. Probar la preview con otro operador y comprobar que los jugadores normales no ven los marcadores.
+5. Con un premio previamente pendiente, ejecutar `pending info` y `pending`
+   con inventario lleno y luego con un espacio libre. Reiniciar el servidor y repetir.

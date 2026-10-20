@@ -59,6 +59,49 @@ public final class CollectCommands {
         }
         return true;
     }
+    private static ServerPlayer pointAdmin(CommandContext<CommandSourceStack> c) {
+        try { return c.getSource().getPlayerOrException(); }
+        catch (Exception e) { error(c, "Este comando requiere un administrador dentro del mundo."); return null; }
+    }
+
+    /** Posición en el centro horizontal del bloque, igual que point add. */
+    private static CollectData.Point atPlayer(int id, ServerPlayer player) {
+        return new CollectData.Point(id, player.level().dimension().location().toString(),
+                Math.floor(player.getX()) + 0.5, player.getY(),
+                Math.floor(player.getZ()) + 0.5);
+    }
+
+    /** Solo toma puntos de la misma dimensión y dentro del radio especificado. */
+    private static CollectData.Point nearest(CollectData.Game game, ServerPlayer player, double radius) {
+        String dimension = player.level().dimension().location().toString();
+        CollectData.Point nearest = null;
+        double best = radius * radius;
+        for (CollectData.Point point : game.points) {
+            if (!point.dimension().equals(dimension)) continue;
+            double dx = point.x() - player.getX();
+            double dy = point.y() - player.getY();
+            double dz = point.z() - player.getZ();
+            double distance = dx * dx + dy * dy + dz * dz;
+            if (distance <= best) { best = distance; nearest = point; }
+        }
+        return nearest;
+    }
+
+    private static boolean overlaps(CollectData.Game game, CollectData.Point target, int exceptId) {
+        for (CollectData.Point point : game.points) {
+            if (point.id() == exceptId || !point.dimension().equals(target.dimension())) continue;
+            if (Math.abs(point.x() - target.x()) < 0.25
+                    && Math.abs(point.y() - target.y()) < 0.5
+                    && Math.abs(point.z() - target.z()) < 0.25) return true;
+        }
+        return false;
+    }
+
+    private static void changedPoints(CommandContext<CommandSourceStack> c, CollectData.Game game) {
+        data(c).setDirty();
+        CollectVisuals.refreshPreviews(c.getSource().getServer(), game.id);
+    }
+
     private static ItemStack inHand(CommandContext<CommandSourceStack> c) {
         try { return c.getSource().getPlayerOrException().getMainHandItem().copy(); }
         catch (Exception ignored) { error(c, "Solo un jugador en el mundo puede usar este comando con objeto en mano."); return ItemStack.EMPTY; }
@@ -120,17 +163,14 @@ public final class CollectCommands {
                 .then(Commands.literal("point")
                     .then(Commands.literal("add").then(game().executes(c -> {
                         CollectData.Game g = existing(c); if (g == null || !editable(c, g)) return 0;
-                        ServerPlayer p; try { p = c.getSource().getPlayerOrException(); }
-                        catch (Exception e) { error(c, "Coloca puntos desde dentro del mundo como administrador."); return 0; }
-                        double x = Math.floor(p.getX()) + .5, y = p.getY(), z = Math.floor(p.getZ()) + .5;
-                        String dim = p.level().dimension().location().toString();
-                        for (CollectData.Point old : g.points) {
-                            if (old.dimension().equals(dim) && Math.abs(old.x()-x) < .25 && Math.abs(old.z()-z) < .25 && Math.abs(old.y()-y) < .5) {
-                                error(c, "Ya existe un punto en esta ubicación."); return 0;
-                            }
+                        ServerPlayer p = pointAdmin(c); if (p == null) return 0;
+                        CollectData.Point location = atPlayer(g.nextPointId, p);
+                        if (overlaps(g, location, -1)) {
+                            error(c, "Ya existe un punto en esta ubicación."); return 0;
                         }
-                        CollectData.Point point = new CollectData.Point(g.nextPointId++, dim, x, y, z);
-                        g.points.add(point); data(c).setDirty();
+                        CollectData.Point point = location;
+                        g.nextPointId++;
+                        g.points.add(point); changedPoints(c, g);
                         msg(c, "§aPunto #" + point.id() + " guardado. Total: " + g.points.size()); return 1;
                     })))
                     .then(Commands.literal("list").then(game().executes(c -> {
@@ -144,8 +184,52 @@ public final class CollectCommands {
                             CollectData.Game g = existing(c); if (g == null || !editable(c, g)) return 0;
                             int id = IntegerArgumentType.getInteger(c, "id");
                             if (!g.points.removeIf(p -> p.id() == id)) { error(c, "No existe ese punto."); return 0; }
-                            data(c).setDirty(); msg(c, "§aPunto #" + id + " eliminado."); return 1;
+                            changedPoints(c, g);
+                            msg(c, "§aPunto #" + id + " eliminado."); return 1;
                         }))))
+                    // Identifica el punto más cercano (máximo 8 bloques).
+                    .then(Commands.literal("nearest").then(game().executes(c -> {
+                        CollectData.Game g = existing(c); if (g == null) return 0;
+                        ServerPlayer p = pointAdmin(c); if (p == null) return 0;
+                        CollectData.Point near = nearest(g, p, 8.0);
+                        if (near == null) { error(c, "No hay puntos en esta dimensión a menos de 8 bloques."); return 0; }
+                        double distance = Math.sqrt(p.distanceToSqr(near.x(), near.y(), near.z()));
+                        msg(c, "§ePunto #" + near.id() + " §fa "
+                                + String.format(Locale.ROOT, "%.1f", distance)
+                                + " bloques §7| mover: /crafterscollect point move " + g.id + " " + near.id()
+                                + " §7| borrar: /crafterscollect point remove " + g.id + " " + near.id());
+                        return 1;
+                    })))
+                    // Recoloca un punto existente SIN cambiar el ID ni los rangos.
+                    .then(Commands.literal("move").then(game()
+                        .then(Commands.argument("id", IntegerArgumentType.integer(1)).executes(c -> {
+                            CollectData.Game g = existing(c); if (g == null || !editable(c, g)) return 0;
+                            ServerPlayer p = pointAdmin(c); if (p == null) return 0;
+                            int id = IntegerArgumentType.getInteger(c, "id");
+                            int index = -1;
+                            for (int i = 0; i < g.points.size(); i++)
+                                if (g.points.get(i).id() == id) { index = i; break; }
+                            if (index < 0) { error(c, "No existe el punto #" + id); return 0; }
+                            CollectData.Point moved = atPlayer(id, p);
+                            if (overlaps(g, moved, id)) { error(c, "Ya existe otro punto en ese lugar."); return 0; }
+                            g.points.set(index, moved);
+                            changedPoints(c, g);
+                            msg(c, "§aPunto #" + id + " movido a §f"
+                                    + (int)moved.x() + " " + String.format(Locale.ROOT, "%.1f", moved.y())
+                                    + " " + (int)moved.z() + " §7(" + moved.dimension() + ").");
+                            return 1;
+                        }))))
+                    // Borra el objeto más cercano, con un radio conservador de 3 bloques.
+                    .then(Commands.literal("remove-nearest").then(game().executes(c -> {
+                        CollectData.Game g = existing(c); if (g == null || !editable(c, g)) return 0;
+                        ServerPlayer p = pointAdmin(c); if (p == null) return 0;
+                        CollectData.Point near = nearest(g, p, 3.0);
+                        if (near == null) { error(c, "No hay puntos a menos de 3 bloques."); return 0; }
+                        g.points.remove(near);
+                        changedPoints(c, g);
+                        msg(c, "§aPunto #" + near.id() + " eliminado. §7Total: " + g.points.size());
+                        return 1;
+                    })))
                     .then(Commands.literal("preview").then(game().executes(c -> {
                         CollectData.Game g = existing(c); if (g == null) return 0;
                         ServerPlayer p; try { p = c.getSource().getPlayerOrException(); }
@@ -153,7 +237,7 @@ public final class CollectCommands {
                         if (CollectService.activeFor(data(c), p.getUUID()) != null) { error(c, "No puedes usar preview durante una partida."); return 0; }
                         if (CollectVisuals.hasPreview(p.getUUID())) CollectVisuals.clear(p);
                         else CollectVisuals.preview(p, g);
-                        msg(c, "§aVista previa alternada. Acércate a los puntos para verlos."); return 1;
+                        msg(c, "§aVista previa alternada. Verás cada objeto con su etiqueta #ID (sólo tú)."); return 1;
                     }))))
                 .then(Commands.literal("set")
                     .then(Commands.literal("duration").then(game().then(Commands.argument("seconds", IntegerArgumentType.integer(1, 86400)).executes(c -> {
@@ -205,8 +289,13 @@ public final class CollectCommands {
                     (player, gameName) -> report(c, player, CollectService.start(c.getSource().getServer(), player, gameName)))))))
                 .then(Commands.literal("claim").then(game().then(targets().executes(c -> action(c,
                     (player, gameName) -> report(c, player, CollectService.claim(c.getSource().getServer(), player, gameName)))))))
-                .then(Commands.literal("pending").then(game().then(targets().executes(c -> action(c,
-                    (player, gameName) -> report(c, player, CollectService.deliverPending(c.getSource().getServer(), player, gameName)))))))
+                .then(Commands.literal("pending")
+                    .then(Commands.literal("info").then(game().then(targets().executes(c -> action(c,
+                        (player, gameName) -> report(c, player, CollectService.pendingInfo(
+                                c.getSource().getServer(), player, gameName)))))))
+                    .then(game().then(targets().executes(c -> action(c,
+                        (player, gameName) -> report(c, player, CollectService.deliverPending(
+                                c.getSource().getServer(), player, gameName)))))))
                 .then(Commands.literal("results").then(game().then(targets().executes(c -> action(c,
                     (player, gameName) -> info(c, player, gameName))))))
                 .then(Commands.literal("attempts")

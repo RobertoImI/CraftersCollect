@@ -289,19 +289,48 @@ public final class CollectService {
      * Rescata premios que no pudieron materializarse porque otro mod bloqueó
      * el spawn. Nunca duplica una entrega ya reclamada: solo usa la cola guardada.
      */
+    /**
+     * Consulta segura: sólo muestra respaldos que realmente continúan en
+     * pendingItems. Un drop YA creado en el suelo no pertenece a esta cola.
+     */
+    public static String pendingInfo(MinecraftServer server, ServerPlayer player, String gameName) {
+        CollectData data = CollectData.get(server);
+        if (!data.games.containsKey(gameName)) return "§cEse minijuego no existe.";
+        CollectData.Progress progress = data.existing(gameName, player.getUUID());
+        if (progress == null || progress.pendingItems.isEmpty())
+            return "§aNo tienes premios pendientes de recuperar en " + gameName + ".";
+        StringBuilder message = new StringBuilder("§ePendientes en " + gameName + ": §f");
+        int units = 0;
+        int totalStacks = 0;
+        for (ItemStack stack : progress.pendingItems) {
+            if (stack.isEmpty()) continue;
+            units += stack.getCount();
+            if (totalStacks > 0 && totalStacks < 5) message.append("§7, §f");
+            if (totalStacks < 5) message.append(stack.getCount()).append("x ")
+                    .append(stack.getHoverName().getString());
+            totalStacks++;
+        }
+        if (totalStacks > 5) message.append(" §7y ").append(totalStacks - 5).append(" lote(s) más");
+        return message.append(" §7(").append(units).append(" objetos en ")
+                .append(totalStacks).append(" lotes). §fLibera espacio y usa ")
+                .append("/crafterscollect pending ").append(gameName)
+                .append(" ").append(player.getScoreboardName()).toString();
+    }
+
     public static String deliverPending(MinecraftServer server, ServerPlayer player, String gameName) {
         CollectData data = CollectData.get(server);
         if (!data.games.containsKey(gameName)) return "§cEse minijuego no existe.";
         CollectData.Progress progress = data.existing(gameName, player.getUUID());
         if (progress == null || progress.pendingItems.isEmpty())
             return "§eNo tienes premios pendientes de recuperar.";
-        int before = progress.pendingItems.size();
+        int deliveredCount = 0;
         List<ItemStack> remainingPending = new ArrayList<>();
         for (ItemStack pending : progress.pendingItems) {
             if (pending.isEmpty()) continue;
             // Esta recuperación va al inventario exclusivamente. Si aún no
             // cabe, queda en la cola hasta el próximo intento de recuperar.
             ItemStack leftover = insertRewardInInventory(player, pending);
+            deliveredCount += pending.getCount() - leftover.getCount();
             if (!leftover.isEmpty()) remainingPending.add(leftover);
         }
         progress.pendingItems.clear();
@@ -310,10 +339,11 @@ public final class CollectService {
         player.containerMenu.broadcastChanges();
         server.overworld().getDataStorage().save();
         return progress.pendingItems.isEmpty()
-                ? "§a¡Recuperaste todos tus premios pendientes!"
-                : "§eSe recuperaron " + (before - remainingPending.size())
-                + " lote(s). Aún quedan " + remainingPending.size()
-                + " lote(s) sin espacio. Libera espacio y repite el comando.";
+                ? "§a¡Recuperaste " + deliveredCount + " objeto(s)! No quedan premios pendientes."
+                : "§eRecuperaste " + deliveredCount + " objeto(s). §6Quedan "
+                + remainingPending.stream().mapToInt(ItemStack::getCount).sum()
+                + " objeto(s) pendientes en " + remainingPending.size()
+                + " lote(s). Libera espacio y repite el comando.";
     }
 
     public static boolean gameHasActive(CollectData data, String id) {
@@ -325,6 +355,27 @@ public final class CollectService {
     public static void notifyPlayer(ServerPlayer player, String msg) {
         player.sendSystemMessage(Component.literal(msg));
     }
+    /**
+     * Recordatorio al reconectar: NO entregamos automáticamente objetos,
+     * porque el jugador podría tener el inventario lleno u otro mod activo.
+     * La cola guardada sigue intacta hasta que un NPC/admin ejecute pending.
+     */
+    public static void onLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+        CollectData data = CollectData.get(server);
+        for (var entry : data.games.entrySet()) {
+            CollectData.Progress progress = data.existing(entry.getKey(), player.getUUID());
+            if (progress == null || progress.pendingItems.isEmpty()) continue;
+            int units = progress.pendingItems.stream().mapToInt(ItemStack::getCount).sum();
+            notifyPlayer(player, "§6CraftersCollect: Tienes §e" + units
+                    + " §6objeto(s) pendientes de §e" + entry.getKey()
+                    + "§6. Pide al NPC o admin recuperar con /crafterscollect pending "
+                    + entry.getKey() + " " + player.getScoreboardName());
+        }
+    }
+
     public static void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         CollectVisuals.forget(event.getEntity().getUUID());
     }
