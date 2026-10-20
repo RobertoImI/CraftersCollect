@@ -1,0 +1,2 @@
+Copyright (c) 2026 CraftersCR. All rights reserved.
+Source provided to the project owner for testing, modification, and deployment.

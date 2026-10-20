@@ -1,0 +1,25 @@
+modLoader="javafml"
+loaderVersion="[1,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="CraftersCR"
+displayTest="IGNORE_SERVER_VERSION"
+description='''Minijuegos de recoleccion privada configurables mediante comandos, totalmente server-side.'''
+
+[[dependencies.crafterscollect]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.0,)"
+ordering="NONE"
+side="SERVER"
+
+[[dependencies.crafterscollect]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1,1.21.2)"
+ordering="NONE"
+side="SERVER"

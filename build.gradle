@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.148'
+}
+version = mod_version
+group = mod_group_id
+base { archivesName = mod_id }
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = neo_version
+    parchment {
+        minecraftVersion = '1.21.1'
+        mappingsVersion = '2024.11.17'
+    }
+    runs {
+        server { server() }
+        client { client() }
+    }
+    mods {
+        crafterscollect { sourceSet(sourceSets.main) }
+    }
+}
+
+tasks.withType(ProcessResources).configureEach {
+    def tokens = [mod_id: mod_id, mod_name: mod_name, mod_version: mod_version, neo_version: neo_version]
+    inputs.properties tokens
+    filesMatching('META-INF/neoforge.mods.toml') { expand tokens }
+}
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
