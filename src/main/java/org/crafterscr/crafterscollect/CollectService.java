@@ -32,16 +32,13 @@ public final class CollectService {
             for (var entry : group.getValue().entrySet()) {
                 CollectData.Attempt attempt = entry.getValue().last;
                 if (attempt == null || attempt.state != CollectData.State.ACTIVE) continue;
-                if (attempt.secondsLeft(now) == 0) {
-                    attempt.state = CollectData.State.FINISHED;
-                    data.setDirty();
-                    ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
-                    if (player != null) {
-                        CollectVisuals.clear(player);
-                        player.playNotifySound(SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 0.8f, 1.2f);
-                        notifyPlayer(player, "§aTiempo terminado. §eRecogiste " + attempt.score + "/" + game.points.size()
-                                + ". §fRegresa al NPC para reclamar tu premio.");
-                    }
+                // Finaliza por tiempo o si, por cualquier razón, ya recogió todos.
+                // También funciona con jugadores desconectados y partidas previas al parche.
+                if (attempt.secondsLeft(now) == 0 || (!game.points.isEmpty()
+                        && attempt.collected.size() >= game.points.size())) {
+                    finishAttempt(data, game, attempt,
+                            server.getPlayerList().getPlayer(entry.getKey()),
+                            attempt.collected.size() >= game.points.size());
                 }
             }
         }
@@ -58,6 +55,10 @@ public final class CollectService {
             CollectData.Attempt attempt = active.attempt;
             long seconds = attempt.secondsLeft(now);
             if (seconds == 0) continue;
+            if (!game.points.isEmpty() && attempt.collected.size() >= game.points.size()) {
+                finishAttempt(data, game, attempt, player, true);
+                continue;
+            }
 
             CollectVisuals.refresh(player, game, attempt);
             String dimension = player.level().dimension().location().toString();
@@ -81,11 +82,39 @@ public final class CollectService {
                             0.25, 0.25, 0.25, 0.04);
                 }
             }
+            // El último objeto cierra inmediatamente el intento; ya puede reclamar
+            // su premio, sin esperar a que el reloj llegue a cero.
+            if (!game.points.isEmpty() && attempt.collected.size() >= game.points.size()) {
+                finishAttempt(data, game, attempt, player, true);
+                continue;
+            }
             String time = String.format(Locale.ROOT, "%02d:%02d", seconds / 60, seconds % 60);
             player.displayClientMessage(Component.literal((picked ? "§a✦ +1  " : "§6✦  ")
                     + "§e" + attempt.score + "§7/§e" + game.points.size()
                     + "   §8│   §b⏱ " + time), true);
         }
+    }
+
+    /**
+     * Una sola ruta de finalización: reloj agotado o colección completada.
+     * Siempre limpia los objetos privados y persiste el estado antes del aviso.
+     */
+    private static void finishAttempt(CollectData data, CollectData.Game game,
+                                      CollectData.Attempt attempt, ServerPlayer player,
+                                      boolean completedAll) {
+        if (attempt.state != CollectData.State.ACTIVE) return;
+        attempt.state = CollectData.State.FINISHED;
+        data.setDirty();
+        if (player == null) return;
+        CollectVisuals.clear(player);
+        player.playNotifySound(SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 0.8f, 1.25f);
+        String result = attempt.score + "/" + game.points.size();
+        player.displayClientMessage(Component.literal("§a✔ §e" + result
+                + (completedAll ? " §a¡COMPLETADO!" : " §c00:00")), true);
+        notifyPlayer(player, (completedAll
+                ? "§a¡Felicidades! Recogiste todos los objetos. La partida terminó."
+                : "§eTiempo terminado. §fRecogiste " + result + ".")
+                + " §fRegresa al NPC para reclamar tu premio.");
     }
 
     public record Active(CollectData.Game game, CollectData.Attempt attempt) {}
@@ -158,19 +187,37 @@ public final class CollectService {
             // El guardado depende de la implementación de Minecraft y NO ofrece
             // atomicidad entre inventarios, drops y comandos de terceros.
             server.overworld().getDataStorage().save();
+            int dropsOnGround = 0;
+            int savedForLater = 0;
             for (ItemStack configured : tier.items) {
                 if (configured.isEmpty()) continue;
-                ItemStack remaining = configured.copy();
-                player.getInventory().add(remaining);
+                // No usar Inventory.add(ItemStack): en creativo puede consumir el
+                // sobrante cuando el inventario está lleno sin crear ningún drop.
+                ItemStack remaining = insertRewardInInventory(player, configured);
                 if (!remaining.isEmpty()) {
+                    // Entidad REAL a los pies, con dueño y mayor tiempo de vida.
                     ItemEntity drop = new ItemEntity(player.serverLevel(), player.getX(),
-                            player.getY() + 0.2, player.getZ(), remaining.copy());
-                    drop.setTarget(player.getUUID()); // NeoForge: sólo este jugador puede recogerlo.
+                            player.getY() + 0.65, player.getZ(), remaining.copy());
+                    drop.setTarget(player.getUUID());
                     drop.setDefaultPickUpDelay();
-                    if (!player.serverLevel().addFreshEntity(drop))
-                        throw new IllegalStateException("No se pudo crear el drop de recompensa");
+                    drop.setExtendedLifetime();
+                    drop.setDeltaMovement(0, 0.16, 0);
+                    if (player.serverLevel().addFreshEntity(drop)) {
+                        dropsOnGround++;
+                    } else {
+                        // Otro mod puede cancelar la creación del drop. Guardamos
+                        // el resto persistentemente en vez de perderlo o bloquear
+                        // el siguiente intento en REVIEW por falta de espacio.
+                        progress.pendingItems.add(remaining.copy());
+                        data.setDirty();
+                        savedForLater++;
+                        org.slf4j.LoggerFactory.getLogger(CollectService.class).warn(
+                                "Drop bloqueado, premio pendiente {} / jugador {} / intento {}",
+                                gameName, player.getUUID(), attempt.serial);
+                    }
                 }
             }
+            player.getInventory().setChanged();
             player.containerMenu.broadcastChanges();
             String safeName = player.getGameProfile().getName();
             for (String configured : tier.commands) {
@@ -187,8 +234,12 @@ public final class CollectService {
             data.setDirty();
             server.overworld().getDataStorage().save();
             player.playNotifySound(SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 0.8f, 1.2f);
-            return "§a¡Premio entregado! §fResultado: §e" + attempt.score + "/" + game.points.size()
-                    + " §7(Intento #" + attempt.serial + ")";
+            return "§a¡Premio procesado! §fResultado: §e" + attempt.score + "/" + game.points.size()
+                    + " §7(Intento #" + attempt.serial + ")"
+                    + (dropsOnGround > 0 ? " §e" + dropsOnGround + " lote(s) a tus pies." : "")
+                    + (savedForLater > 0 ? " §6" + savedForLater
+                    + " lote(s) guardados. Libera espacio y usa /crafterscollect pending "
+                    + gameName + " <jugador> para recuperarlos." : "");
         } catch (Exception error) {
             org.slf4j.LoggerFactory.getLogger(CollectService.class).error(
                     "REVISAR premio {} / jugador {} / intento {}. NO REINTENTAR AUTOMATICAMENTE",
@@ -196,6 +247,73 @@ public final class CollectService {
             // REVIEW impide el reintento automático; la entrega pudo ser parcial.
             return "§cHubo un fallo entregando el premio. Un administrador debe revisar el registro.";
         }
+    }
+
+    /**
+     * Inserción sin pérdidas, también en creativo. Solo se usan los 36 espacios
+     * normales (hotbar + inventario); nunca slots de armadura u offhand.
+     * El ItemStack devuelto contiene EXACTAMENTE la cantidad que no cupo.
+     */
+    private static ItemStack insertRewardInInventory(ServerPlayer player, ItemStack configured) {
+        ItemStack remaining = configured.copy();
+        var inventory = player.getInventory();
+        // Prioridad a completar stacks iguales, respetando sus componentes/NBT.
+        for (int slot = 0; slot < net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE
+                && !remaining.isEmpty(); slot++) {
+            ItemStack existing = inventory.getItem(slot);
+            if (existing.isEmpty() || !ItemStack.isSameItemSameComponents(existing, remaining))
+                continue;
+            int space = Math.min(existing.getMaxStackSize(), inventory.getMaxStackSize())
+                    - existing.getCount();
+            if (space <= 0) continue;
+            int inserted = Math.min(space, remaining.getCount());
+            existing.grow(inserted);
+            remaining.shrink(inserted);
+        }
+        // Luego usar los espacios vacíos. No hacemos la inserción especial de
+        // creativo que descartaba el remanente en Inventory.add().
+        for (int slot = 0; slot < net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE
+                && !remaining.isEmpty(); slot++) {
+            if (!inventory.getItem(slot).isEmpty()) continue;
+            int inserted = Math.min(remaining.getCount(),
+                    Math.min(remaining.getMaxStackSize(), inventory.getMaxStackSize()));
+            if (inserted <= 0) break;
+            inventory.setItem(slot, remaining.copyWithCount(inserted));
+            remaining.shrink(inserted);
+        }
+        inventory.setChanged();
+        return remaining;
+    }
+
+    /**
+     * Rescata premios que no pudieron materializarse porque otro mod bloqueó
+     * el spawn. Nunca duplica una entrega ya reclamada: solo usa la cola guardada.
+     */
+    public static String deliverPending(MinecraftServer server, ServerPlayer player, String gameName) {
+        CollectData data = CollectData.get(server);
+        if (!data.games.containsKey(gameName)) return "§cEse minijuego no existe.";
+        CollectData.Progress progress = data.existing(gameName, player.getUUID());
+        if (progress == null || progress.pendingItems.isEmpty())
+            return "§eNo tienes premios pendientes de recuperar.";
+        int before = progress.pendingItems.size();
+        List<ItemStack> remainingPending = new ArrayList<>();
+        for (ItemStack pending : progress.pendingItems) {
+            if (pending.isEmpty()) continue;
+            // Esta recuperación va al inventario exclusivamente. Si aún no
+            // cabe, queda en la cola hasta el próximo intento de recuperar.
+            ItemStack leftover = insertRewardInInventory(player, pending);
+            if (!leftover.isEmpty()) remainingPending.add(leftover);
+        }
+        progress.pendingItems.clear();
+        progress.pendingItems.addAll(remainingPending);
+        data.setDirty();
+        player.containerMenu.broadcastChanges();
+        server.overworld().getDataStorage().save();
+        return progress.pendingItems.isEmpty()
+                ? "§a¡Recuperaste todos tus premios pendientes!"
+                : "§eSe recuperaron " + (before - remainingPending.size())
+                + " lote(s). Aún quedan " + remainingPending.size()
+                + " lote(s) sin espacio. Libera espacio y repite el comando.";
     }
 
     public static boolean gameHasActive(CollectData data, String id) {

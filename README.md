@@ -1,4 +1,4 @@
-# CraftersCollect v0.1.0 — código fuente
+# CraftersCollect v0.1.1 — código fuente
 
 **Minecraft 1.21.1 · NeoForge 21.1.218 · Java 21 · mod server-side**
 
@@ -35,7 +35,7 @@ CraftersCollect/
 El lanzador descargará Gradle 8.10.2 desde services.gradle.org en el primer uso y Gradle descargará las dependencias de NeoForge desde sus repositorios. Con internet disponible, el jar se generará en:
 
 ```text
-build/libs/crafterscollect-0.1.0.jar
+build/libs/crafterscollect-0.1.1.jar
 ```
 
 **Alternativa sin ejecutar el lanzador:** instala Gradle 8.10.2 y ejecuta `gradle clean build`. También hay un workflow de GitHub Actions que puede compilarlo automáticamente al subir los archivos a un repositorio.
@@ -129,9 +129,10 @@ Los comandos están restringidos a permiso nivel 2. Un NPC o bloque de comandos 
 - Los objetos visibles son entidades **solo de paquetes de red**, sin entidad persistente de mundo. Los demás participantes no las reciben. Cada cliente las anima como objetos vanilla tirados que giran y flotan. Solo el servidor valida que pasaste por su punto.
 - Sonido al iniciar: pling de bloque musical. Al recoger: experiencia. Al terminar/reclamar: subida de nivel; partículas felices solo para ese jugador.
 - HUD en Action Bar: recogidos / total y tiempo restante.
-- Mientras el tiempo transcurre, no se puede reclamar. Incluso si recoge todos, debe esperar a que finalice.
+- Mientras el tiempo transcurre, no se puede reclamar. **Si recoge TODOS los puntos, la partida termina inmediatamente** y puede reclamar sin esperar el resto del reloj.
 - Tras la ronda, los objetos desaparecen y se conserva el resultado del intento para cobrar. Debe cobrar antes de repetir.
-- Los premios se entregan directamente al inventario. Lo que no quepa cae a los pies como ItemEntity REAL con `setTarget(UUID)` (solo el destinatario puede recogerlo mientras viva en el suelo).
+- Los premios se entregan directamente al inventario, incluso en creativo (sin destruir sobrantes). Lo que no quepa cae a los pies como ItemEntity REAL protegido con `setTarget(UUID)` y vida útil extendida.
+- Si otro mod bloquea la creación del drop, la parte no entregada se guarda en una cola persistente del jugador: el intento se considera reclamado, permite jugar nuevamente y se recupera al liberar espacio ejecutando `/crafterscollect pending pascua Steve`. Si un mod **elimina después** un drop ya creado, esa eliminación externa no puede detectarse con este respaldo.
 - Se permite reclamar **uno por intento**. Un jugador puede ganar el mismo rango varias veces en intentos diferentes.
 - Los premios se registran con IDs de intento que nunca se reutilizan, aunque se reinicien oportunidades.
 
@@ -148,6 +149,7 @@ Los comandos están restringidos a permiso nivel 2. Un NPC o bloque de comandos 
 | `/crafterscollect reward list pascua` | Ver rangos |
 | `/crafterscollect reward remove pascua 0 10` | Borrar rango entero |
 | `/crafterscollect results pascua Steve` | Ver resultados e historial reciente |
+| `/crafterscollect pending pascua Steve` | Recuperar premios que no pudieron aparecer; requiere espacio libre |
 | `/crafterscollect attempts info pascua Steve` | Ver oportunidades |
 | `/crafterscollect attempts add pascua Steve 1` | Sumar un intento |
 | `/crafterscollect attempts reset pascua Steve` | Reiniciar intentos base usados |
@@ -170,13 +172,15 @@ No modifica archivos de Easy NPC, no necesita dependencias de otro mod y no usa 
 - [ ] A recoge un punto; B no debe verlo; si B inicia su juego, ve su propia copia.
 - [ ] Cronómetro y Action Bar; finalizar por tiempo; verificar que los visuales se eliminan.
 - [ ] Ejecutar `claim` durante partida: debe bloquear. Finalizada: permitir una vez.
-- [ ] Premio con inventario lleno: comprobar drop protegido en el suelo y no duplicación.
+- [ ] Premio con inventario lleno en **creativo y supervivencia**: comprobar drop protegido en el suelo y no duplicación.
+- [ ] Recoger todos los puntos antes de acabar el tiempo: debe terminar inmediatamente, ocultar visuales y permitir claim.
+- [ ] En caso de que un mod bloquee el spawn: comprobar respaldo con `pending`, permitiendo jugar nuevamente sin bloqueo.
 - [ ] Desconectar y reconectar durante partida, reiniciar servidor, cambiar dimensión.
 - [ ] Repetir 3 intentos con 10/5/50 recogidas: 3 premios independientes.
 - [ ] `attempts add` y `attempts reset` conservan el historial.
 - [ ] Comprobar `@p` desde tu NPC concreto con otros jugadores cerca.
 
-## 9. Límites de la v0.1.0
+## 9. Límites de la v0.1.1
 
 - Los objetos se representan con **ítems vanilla falsos** (bobbing y giro natural), no con un `item_display` de escala y transformación personalizada. El tamaño y velocidad de giro todavía no son configurables.
 - El sonido, partículas, radio de visualización y colores del HUD son fijos en v0.1.0 (el radio de **recogida** sí es configurable).
@@ -185,3 +189,12 @@ No modifica archivos de Easy NPC, no necesita dependencias de otro mod y no usa 
 - No permite cambiar objetos, puntos, duración ni recompensas mientras haya una partida activa del mismo minijuego.
 - Los premios pendientes corresponden al rango configurado en el momento del reclamo; evita editar premios con intentos finalizados aún sin cobrar.
 - Es imprescindible probar en un servidor real antes de utilizarlo en un evento público.
+
+## 10. Parche v0.1.1 (sobre master)
+
+1. Corrige premios desaparecidos en inventarios creativos llenos: inserción controlada en 36 slots (no usa el comportamiento de borrado de `Inventory.add`).
+2. Sobrantes reales: se colocan a los pies del jugador con propietario y tiempo de vida extendido. Si se cancela la creación, quedan guardados para posterior recuperación con `/crafterscollect pending <evento> <jugador>`.
+3. No es necesario recoger del suelo el premio previo para jugar otra vez: basta con haber reclamado el intento.
+4. Termina inmediatamente al recoger todos los puntos (un intento sigue dando un solo premio).
+
+**Compatibilidad:** la nueva cola opcional `pendingItems` se incorpora al guardado existente: los mundos antiguos sin ese campo cargan con la cola vacía. Haz copia de seguridad del mundo antes de probar cualquier actualización.

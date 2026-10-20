@@ -172,37 +172,47 @@ public final class CollectData extends SavedData {
         public int bonus = 0;
         public int nextSerial = 1;
         public int claimedCount = 0;
+        // Respaldo de los ítems cuyo drop fue cancelado por el servidor/mods.
+        // No está ligado al intento actual: no impide ganar en el siguiente.
+        public final List<ItemStack> pendingItems = new ArrayList<>();
         public Attempt last;
         // Intentos reclamados anteriores: no se pierden al empezar otra partida.
         public final List<Attempt> history = new ArrayList<>();
-        CompoundTag save() {
+        CompoundTag save(HolderLookup.Provider registries) {
             CompoundTag t = new CompoundTag();
             t.putInt("used", used); t.putInt("bonus", bonus);
             t.putInt("nextSerial", nextSerial); t.putInt("claimedCount", claimedCount);
             if (last != null) t.put("last", last.save());
             ListTag old = new ListTag(); for (Attempt a : history) old.add(a.save());
             t.put("history", old);
+            ListTag pending = new ListTag();
+            for (ItemStack item : pendingItems) if (!item.isEmpty()) pending.add(item.save(registries));
+            t.put("pendingItems", pending);
             return t;
         }
-        static Progress load(CompoundTag t) {
+        static Progress load(CompoundTag t, HolderLookup.Provider registries) {
             Progress p = new Progress();
             p.used = t.getInt("used"); p.bonus = t.getInt("bonus");
             p.nextSerial = Math.max(1, t.getInt("nextSerial"));
             p.claimedCount = t.getInt("claimedCount");
             if (t.contains("last", Tag.TAG_COMPOUND)) p.last = Attempt.load(t.getCompound("last"));
             for (Tag h : t.getList("history", Tag.TAG_COMPOUND)) p.history.add(Attempt.load((CompoundTag)h));
+            for (Tag item : t.getList("pendingItems", Tag.TAG_COMPOUND)) {
+                ItemStack stack = ItemStack.parseOptional(registries, (CompoundTag)item);
+                if (!stack.isEmpty()) p.pendingItems.add(stack);
+            }
             return p;
         }
     }
 
     @Override public CompoundTag save(CompoundTag root, HolderLookup.Provider registries) {
-        root.putInt("schema", 1);
+        root.putInt("schema", 2);
         ListTag g = new ListTag(); for (Game game : games.values()) g.add(game.save(registries)); root.put("games", g);
         ListTag p = new ListTag();
         for (var group : players.entrySet()) for (var pair : group.getValue().entrySet()) {
             CompoundTag entry = new CompoundTag();
             entry.putString("game", group.getKey()); entry.putUUID("uuid", pair.getKey());
-            entry.put("progress", pair.getValue().save()); p.add(entry);
+            entry.put("progress", pair.getValue().save(registries)); p.add(entry);
         }
         root.put("players", p);
         return root;
@@ -218,7 +228,7 @@ public final class CollectData extends SavedData {
             CompoundTag entry = (CompoundTag) tag;
             if (!entry.hasUUID("uuid")) continue;
             data.players.computeIfAbsent(entry.getString("game"), ignored -> new HashMap<>())
-                    .put(entry.getUUID("uuid"), Progress.load(entry.getCompound("progress")));
+                    .put(entry.getUUID("uuid"), Progress.load(entry.getCompound("progress"), registries));
         }
         return data;
     }

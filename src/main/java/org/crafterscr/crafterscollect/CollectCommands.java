@@ -205,6 +205,8 @@ public final class CollectCommands {
                     (player, gameName) -> report(c, player, CollectService.start(c.getSource().getServer(), player, gameName)))))))
                 .then(Commands.literal("claim").then(game().then(targets().executes(c -> action(c,
                     (player, gameName) -> report(c, player, CollectService.claim(c.getSource().getServer(), player, gameName)))))))
+                .then(Commands.literal("pending").then(game().then(targets().executes(c -> action(c,
+                    (player, gameName) -> report(c, player, CollectService.deliverPending(c.getSource().getServer(), player, gameName)))))))
                 .then(Commands.literal("results").then(game().then(targets().executes(c -> action(c,
                     (player, gameName) -> info(c, player, gameName))))))
                 .then(Commands.literal("attempts")
@@ -269,6 +271,7 @@ public final class CollectCommands {
         if (p == null) { msg(c, "§e" + player.getScoreboardName() + " §7no ha participado. Quedan " + game.attempts + " intentos."); return; }
         msg(c, "§e" + player.getScoreboardName() + " §fIntentos usados: " + p.used + "/" + (game.attempts + p.bonus)
             + ", premios reclamados: " + p.claimedCount
+            + ", lotes pendientes: " + p.pendingItems.size()
             + ", último: " + (p.last == null ? "ninguno" : p.last.state + " (" + p.last.score + " puntos, #" + p.last.serial + ")"));
         int size = p.history.size();
         for (int i = Math.max(0, size - 5); i < size; i++) {
